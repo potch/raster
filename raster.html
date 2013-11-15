@@ -1,0 +1,258 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1, maximum-scale=1">
+    <title></title>
+    <style>
+    </style>
+  </head>
+  <body>
+    <canvas></canvas>
+
+    <script>
+      function WebWorker (fn) {
+        var src = '(' + fn.toString() + ')();';
+        var blob = new Blob([src], { "type" : "text/javascript" });
+        var url = URL.createObjectURL(blob);
+        var w = new Worker(url);
+        return function(data) {
+          return new Promise(function (resolve, reject) {
+            function done(e) {
+              resolve(e.data);
+              w.removeEventListener('message', done);
+            }
+            w.addEventListener('message', done);
+            w.postMessage(data);
+          });
+        };
+      }
+
+      var workerTick = WebWorker(function() {
+
+        function Triangle(p1, p2, p3) {
+          this.p1 = p1;
+          this.p2 = p2;
+          this.p3 = p3;
+
+          this.v0 = [p3[0] - p1[0], p3[1] - p1[1]];
+          this.v1 = [p2[0] - p1[0], p2[1] - p1[1]];
+          this.color = [1, 1, 1];
+          this.opacity = 1;
+
+          this.translation = [0,0];
+          this.rotation = 0;
+        }
+        Triangle.prototype = {
+          transform: function(p) {
+            return rotate(translate(p, this.translation), this.rotation);
+          },
+          contains: function(p) {
+            var tp = this.transform(p);
+            var v0 = this.v0;
+            var v1 = this.v1;
+            var v2 = [tp[0] - this.p1[0], tp[1] - this.p1[1]];
+
+            var dot00 = (v0[0]*v0[0]) + (v0[1]*v0[1]);
+            var dot01 = (v0[0]*v1[0]) + (v0[1]*v1[1]);
+            var dot02 = (v0[0]*v2[0]) + (v0[1]*v2[1]);
+            var dot11 = (v1[0]*v1[0]) + (v1[1]*v1[1]);
+            var dot12 = (v1[0]*v2[0]) + (v1[1]*v2[1]);
+
+            var invDenom = 1/ (dot00 * dot11 - dot01 * dot01);
+
+            var u = (dot11 * dot02 - dot01 * dot12) * invDenom;
+            var v = (dot00 * dot12 - dot01 * dot02) * invDenom;
+
+            return ((u >= 0) && (v >= 0) && (u + v < 1));
+          }
+        };
+
+        function affine(p, tx, ty, ang) {
+          return [Math.cos(ang) * p[0] + Math.sin(ang) * p[1] + tx,
+                  -Math.sin(ang) * p[0] + Math.cos(ang) * p[1] + ty];
+        }
+        function rotate(p, ang) {
+          return [Math.cos(ang) * p[0] + Math.sin(ang) * p[1],
+                  -Math.sin(ang) * p[0] + Math.cos(ang) * p[1]];
+        }
+        function translate(p, offset) {
+          return [offset[0] + p[0], offset[1] + p[1]];
+        }
+
+
+        function d2 (x1, y1, x2, y2) {
+          return (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
+        }
+
+        function line(x0, y0, x1, y1, fn) {
+          var dx = Math.abs(x1 - x0);
+          var dy = Math.abs(y1 - y0);
+          var sx = x0 < x1 ? size : -size;
+          var sy = y0 < y1 ? size : -size;
+          var err = dx - dy;
+          var val;
+
+          while(true) {
+            val = fn([x0, y0]);
+            if (val) return val;
+            if (x0 == x1 && y0 == y1) break;
+            var e2 = 2 * err;
+            if (e2 > -dy) {
+              err = err - dy;
+              x0 = x0 + sx;
+            }
+            if (x0 == x1 && y0 == y1) {
+              val = fn([x0, y0]);
+              if (val) return val;
+              break;
+            }
+            if (e2 < dx) {
+              err = err + dx;
+              y0 = y0 + sy;
+            }
+          }
+        }
+
+        function ccw(a,b,c) {
+          return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0]);
+        }
+
+        function intersect(a, b, c, d) {
+          return ccw(a, c, d) != ccw(b, c, d) && ccw(a, b, c) != ccw(a, b, d);
+        }
+
+        function checkOcclusion(p1, p2, t) {
+          var tp1 = t.transform(p1);
+          var tp2 = t.transform(p2);
+          return intersect(tp1, tp2, t.p1, t.p2) ||
+                 intersect(tp1, tp2, t.p2, t.p3) ||
+                 intersect(tp1, tp2, t.p1, t.p3);
+        }
+
+        function rgb(c) {
+          return [
+            c[0] * 255 | 0,
+            c[1] * 255 | 0,
+            c[2] * 255 | 0
+          ];
+        }
+
+        var width = 640;
+        var height = 480;
+        var size = 4;
+
+        var lights = [
+          [width+10, height+10, [1,1,1]],
+          [width/2, height/2, [1,1,1]],
+          [-10, height+10, [1,1,1]],
+          [width+10, -10, [1,1,1]],
+          [-10,-10, [1,1,1]]
+        ];
+
+        var triangles = [
+          new Triangle([0,-40],[-37,27],[37,27]),
+          new Triangle([0,-23],[-30,30],[30,30])
+        ];
+
+        triangles[0].color = [1, 0, 1];
+        triangles[0].opacity = 0.1;
+
+        triangles[1].translation = [-200,-100];
+        triangles[1].color = [1, 1, 1];
+        triangles[1].opacity = 1;
+
+        var ang;
+
+        var y=0;
+
+        function tick(iData) {
+          var sTime = Date.now();
+          ang = sTime / 500;
+
+          triangles[0].translation = [-width/2 + 0.25 * width * Math.cos(ang / 2),
+                           -height/2 + height / 4 * Math.sin(ang / 3)];
+          triangles[0].rotation = ang;
+          triangles[1].rotation = -ang/2;
+
+          var t, j;
+
+          var pos = 0;
+
+          for (var y = 0; y < height; y += size) {
+            for (var x = 0; x < width; x += size) {
+              var illum = [0, 0, 0];
+              for (var i=0; i<lights.length; i++) {
+                var light = lights[i];
+                var intensity = 1 / (d2(light[0], light[1], x, y) / 8000+1);
+                if (intensity < .01) continue;
+                for (j=0; j<triangles.length; j++) {
+                  t = triangles[j];
+                  if (checkOcclusion([x, y], light, t)) {
+                    if (t.opacity == 1) break;
+                    illum[0] += intensity * light[2][0] * (1-t.opacity) * t.color[0];
+                    illum[1] += intensity * light[2][1] * (1-t.opacity) * t.color[1];
+                    illum[2] += intensity * light[2][2] * (1-t.opacity) * t.color[2];
+                  } else {
+                    illum[0] += intensity * light[2][0];
+                    illum[1] += intensity * light[2][1];
+                    illum[2] += intensity * light[2][2];
+                  }
+                }
+              }
+              illum[0] /= triangles.length;
+              illum[1] /= triangles.length;
+              illum[2] /= triangles.length;
+              for (j=0; j<triangles.length; j++) {
+                t = triangles[j];
+                if (t.contains([x, y])) {
+                  illum = [t.color[0] * t.opacity + (1-t.opacity) * illum[0],
+                           t.color[1] * t.opacity + (1-t.opacity) * illum[1],
+                           t.color[2] * t.opacity + (1-t.opacity) * illum[2]];
+                }
+              }
+              illum = rgb(illum);
+              iData.data[pos] = illum[0];
+              iData.data[pos+1] = illum[1];
+              iData.data[pos+2] = illum[2];
+              iData.data[pos+3] = 255;
+              pos+=4;
+            }
+          }
+          return iData;
+        }
+
+        onmessage = function(e) {
+          postMessage(tick(e.data));
+        };
+
+      });
+
+      var width = 640;
+      var height = 480;
+      var size = 4;
+
+      var fb = document.createElement('canvas');
+      var c = document.querySelector('canvas');
+
+      fb.width = width/size;
+      fb.height = height/size;
+      c.width = width;
+      c.height = height;
+      var fbCtx = fb.getContext('2d');
+      var ctx = c.getContext('2d');
+      ctx.mozImageSmoothingEnabled = false;
+
+      var iData = ctx.createImageData(width/size|0, height/size|0);
+
+      function tick() {
+        workerTick(iData).then(function(iData) {
+          fbCtx.putImageData(iData,0,0);
+          ctx.drawImage(fb,0,0,width,height);
+          mozRequestAnimationFrame(tick);
+        });
+      }
+      tick();
+    </script>
+  </body>
+</html>
